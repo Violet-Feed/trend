@@ -1,0 +1,168 @@
+version: '3.8'
+
+services:
+  # PostgreSQL for Hive Metastore and JuiceFS metadata
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./.config/postgres:/docker-entrypoint-initdb.d:ro
+    networks:
+      - bigdata-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # JuiceFS mount service using juicedata/mount image with OSS storage
+  juicefs:
+    image: juicedata/mount:ce-v1.2.4
+    container_name: juicefs-mount
+    privileged: true
+    environment:
+      - META_PASSWORD=postgres123
+      - OSS_BUCKET=https://violet-feed-r.oss-cn-beijing.aliyuncs.com
+      - OSS_ACCESS_KEY=  # Fill in your OSS access key
+      - OSS_SECRET_KEY=  # Fill in your OSS secret key
+    volumes:
+      - /tmp/juicefs-mount:/mnt
+      - ./.config/juicefs/entrypoint.sh:/entrypoint.sh:ro
+    networks:
+      - bigdata-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh /entrypoint.sh
+    healthcheck:
+      test: ["CMD-SHELL", "stat /mnt/.config || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Kafka 4.0 (KRaft mode - no Zookeeper needed)
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: kafka
+    hostname: kafka
+    user: root
+    ports:
+      - "9092:9092"     # Kafka broker (external)
+      - "9093:9093"     # Kafka broker (internal)
+      - "9094:9094"     # Kafka controller
+    environment:
+      # KRaft mode configuration
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9094,PLAINTEXT_INTERNAL://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      # Storage configuration
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Performance tuning
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      # Enable auto topic creation
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - /tmp/juicefs-mount:/mnt
+    networks:
+      - bigdata-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Kafka UI - Web interface for Kafka management
+  kafka-ui:
+    image: rootpublic/kafka-ui:0.7.2
+    container_name: kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+    networks:
+      - bigdata-net
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  jobmanager:
+    image: flink:2.1.1-java21
+    container_name: flink-jobmanager
+    hostname: jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        state.backend.type: rocksdb
+    volumes:
+      - /tmp/juicefs-mount:/mnt
+    networks:
+      - bigdata-net
+    restart: unless-stopped
+
+  taskmanager:
+    image: flink:2.0.1-java21
+    container_name: flink-taskmanager
+    hostname: taskmanager
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        state.backend.type: rocksdb
+    volumes:
+      - /tmp/juicefs-mount:/mnt
+    networks:
+      - bigdata-net
+    restart: unless-stopped
+
+  kvrocks:
+    image: apache/kvrocks:2.13.0
+    container_name: kvrocks
+    ports:
+      - "6666:6666"
+    command: --bind 0.0.0.0
+    volumes:
+      - kvrocks-data:/var/lib/kvrocks
+    networks:
+      - bigdata-net
+    restart: unless-stopped
+
+
+
+volumes:
+  postgres-data:
+  kafka-data:
+  kvrocks-data:
+
+networks:
+  bigdata-net:
+    driver: bridge
