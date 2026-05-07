@@ -6,12 +6,10 @@ import io.lettuce.core.api.sync.RedisCommands;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import violet.trending.flink.processing.aggregators.CategoryTopKAggregator;
 import violet.trending.flink.processing.processors.TrendingCalculator;
 
-/**
- * Flink 2.0 sink that writes TrendingResult into Redis sorted sets using hot:{category}.
- */
-public class RedisHotRankingSink implements Sink<TrendingCalculator.TrendingResult> {
+public class RedisHotRankingSink implements Sink<CategoryTopKAggregator.CategoryTopKResult> {
 
     private final String redisUri;
 
@@ -20,11 +18,11 @@ public class RedisHotRankingSink implements Sink<TrendingCalculator.TrendingResu
     }
 
     @Override
-    public SinkWriter<TrendingCalculator.TrendingResult> createWriter(WriterInitContext context) {
+    public SinkWriter<CategoryTopKAggregator.CategoryTopKResult> createWriter(WriterInitContext context) {
         return new RedisHotRankingWriter(redisUri);
     }
 
-    private static final class RedisHotRankingWriter implements SinkWriter<TrendingCalculator.TrendingResult> {
+    private static final class RedisHotRankingWriter implements SinkWriter<CategoryTopKAggregator.CategoryTopKResult> {
 
         private final RedisClient redisClient;
         private final StatefulRedisConnection<String, String> connection;
@@ -37,25 +35,23 @@ public class RedisHotRankingSink implements Sink<TrendingCalculator.TrendingResu
         }
 
         @Override
-        public void write(TrendingCalculator.TrendingResult value, Context context) {
-            if (value == null || value.getCategory() == null) {
+        public void write(CategoryTopKAggregator.CategoryTopKResult value, Context context) {
+            if (value == null || value.getKey() == null || value.getTopItems() == null || value.getTopItems().isEmpty()) {
                 return;
             }
-            String redisKey = "hot:" + value.getCategory();
-            String member = String.valueOf(value.getCreationId());
-            syncCommands.zadd(redisKey, value.getScore(), member);
-            // Trim to top 100 by removing lowest scores when size exceeds limit.
-            long size = syncCommands.zcard(redisKey);
-            int maxSize = 100;
-            if (size > maxSize) {
-                long trimCount = size - maxSize;
-                syncCommands.zremrangebyrank(redisKey, 0, trimCount - 1);
+            String redisKey = "trend:" + value.getKey();
+            String tempKey = redisKey + ":new";
+
+            syncCommands.del(tempKey);
+            for (TrendingCalculator.TrendingResult item : value.getTopItems()) {
+                String member = String.valueOf(item.getCreationId());
+                syncCommands.zadd(tempKey, item.getScore(), member);
             }
+            syncCommands.rename(tempKey, redisKey);
         }
 
         @Override
         public void flush(boolean endOfInput) {
-            // Lettuce sync client writes immediately; no buffered flush needed.
         }
 
         @Override

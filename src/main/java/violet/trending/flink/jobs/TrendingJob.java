@@ -6,17 +6,15 @@ import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
-import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
-import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import violet.trending.flink.common.pojo.Action;
 import violet.trending.flink.common.pojo.ActionBatch;
 import violet.trending.flink.common.pojo.Creation;
 import violet.trending.flink.connectors.kafka.KafkaSourceFactory;
 import violet.trending.flink.connectors.redis.RedisHotRankingSink;
-import violet.trending.flink.processing.aggregators.TrendingWindowAggregator;
+import violet.trending.flink.processing.aggregators.CategoryTopKAggregator;
 import violet.trending.flink.processing.functions.ActionBatchSplitter;
+import violet.trending.flink.processing.processors.CategoryRankingManager;
 import violet.trending.flink.processing.processors.CreationStateUpdater;
 import violet.trending.flink.processing.processors.TrendingCalculator;
 
@@ -54,12 +52,26 @@ public final class TrendingJob {
                 actionWatermarks,
                 "action-batch-source");
 
-        // --- Creation state enrichment ---
-        creationStream
+        // --- Creation state enrichment & removal signal ---
+        SingleOutputStreamOperator<Creation> creationUpdateStream = creationStream
                 .name("creation-stream")
                 .keyBy(Creation::getCreationId)
                 .process(new CreationStateUpdater())
                 .name("creation-state-updater");
+
+        // Removal signal: creations with status != 0 -> TrendingResult with removed=true
+        DataStream<TrendingCalculator.TrendingResult> removalStream = creationUpdateStream
+                .filter(c -> c.getStatus() != null && c.getStatus() != 0)
+                .map(c -> {
+                    TrendingCalculator.TrendingResult r = new TrendingCalculator.TrendingResult();
+                    r.setCreationId(c.getCreationId());
+                    r.setCategory(c.getCategory());
+                    r.setScore(0);
+                    r.setRemoved(true);
+                    return r;
+                })
+                .returns(TypeInformation.of(TrendingCalculator.TrendingResult.class))
+                .name("creation-removal-signal");
 
         // --- Action processing & trending score update ---
         DataStream<Action> actionStream = actionBatchStream
@@ -72,25 +84,32 @@ public final class TrendingJob {
                 .process(new TrendingCalculator(options.calculatorHalfLifeMillis))
                 .name("trending-calculator");
 
-        // --- Window aggregation with exponential decay at window end ---
-        WindowedStream<TrendingCalculator.TrendingResult, Long, TimeWindow> windowed =
-                trendingStream
-                        .keyBy(TrendingCalculator.TrendingResult::getCreationId)
-                        .window(TumblingProcessingTimeWindows.of(options.windowSize));
+        // --- Per-category ranking -> trend:{category} ---
+        DataStream<TrendingCalculator.TrendingResult> categoryInput = trendingStream
+                .filter(r -> r.getCategory() != null)
+                .union(removalStream.filter(r -> r.getCategory() != null));
 
-        DataStream<TrendingWindowAggregator.WindowedTrendingResult> decayedWindowStream = windowed
-                .reduce(
-                        TrendingWindowAggregator.latestReducer(),
-                        new TrendingWindowAggregator(options.windowDecayHalfLifeMillis))
-                .name("windowed-trending-decay");
+        DataStream<CategoryTopKAggregator.CategoryTopKResult> categoryRanking = categoryInput
+                .keyBy(TrendingCalculator.TrendingResult::getCategory)
+                .process(new CategoryRankingManager(options.windowSize.toMillis(), options.windowDecayHalfLifeMillis))
+                .name("category-ranking-manager");
 
-        // --- Sink to Redis (convert subclass to base type) ---
-        decayedWindowStream
-                .map(result -> (TrendingCalculator.TrendingResult) result)
-                .returns(TypeInformation.of(TrendingCalculator.TrendingResult.class))
-                .name("windowed-result-cast")
+        categoryRanking
                 .sinkTo(new RedisHotRankingSink(options.redisUri))
-                .name("redis-hot-ranking-sink");
+                .name("redis-category-sink");
+
+        // --- Global ranking -> trend:all ---
+        DataStream<TrendingCalculator.TrendingResult> allInput = trendingStream
+                .union(removalStream);
+
+        DataStream<CategoryTopKAggregator.CategoryTopKResult> globalRanking = allInput
+                .keyBy(r -> "all")
+                .process(new CategoryRankingManager(options.windowSize.toMillis(), options.windowDecayHalfLifeMillis))
+                .name("global-ranking-manager");
+
+        globalRanking
+                .sinkTo(new RedisHotRankingSink(options.redisUri))
+                .name("redis-all-sink");
     }
 
     public static final class TrendingJobOptions {

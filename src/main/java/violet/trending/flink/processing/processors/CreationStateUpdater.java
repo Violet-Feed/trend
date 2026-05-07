@@ -20,7 +20,11 @@ public class CreationStateUpdater extends KeyedProcessFunction<Long, Creation, C
 
     @Override
     public void processElement(Creation creation, Context ctx, Collector<Creation> out) throws Exception {
+        if (creation.getStatus() == null || creation.getStatus() != 0) {
+            creationState.update(null);
+            out.collect(creation);
+            return;
+        }
         creationState.update(creation);
-        out.collect(creation);
     }
 }

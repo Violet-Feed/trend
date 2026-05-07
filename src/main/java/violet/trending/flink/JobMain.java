@@ -16,19 +16,19 @@ public class JobMain {
         env.enableCheckpointing(100_000L);
 
         Map<String, String> envVars = System.getenv();
-        String bootstrapServers = envVars.getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
+        String bootstrapServers = envVars.getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "8.130.134.60:9094");
 
         KafkaSourceFactory.KafkaSourceOptions creationOptions =
                 new KafkaSourceFactory.KafkaSourceOptions(
                         bootstrapServers,
-                        parseTopics(envVars.get("CREATION_TOPICS"), "creation-topic"),
-                        envVars.getOrDefault("CREATION_GROUP_ID", "creation-consumer"));
+                        parseTopics(envVars.get("CREATION_TOPICS"), "mysql.violet.creation"),
+                        envVars.getOrDefault("CREATION_GROUP_ID", "flink_creation_consumer"));
 
         KafkaSourceFactory.KafkaSourceOptions actionOptions =
                 new KafkaSourceFactory.KafkaSourceOptions(
                         bootstrapServers,
-                        parseTopics(envVars.get("ACTION_TOPICS"), "action-topic"),
-                        envVars.getOrDefault("ACTION_GROUP_ID", "action-consumer"));
+                        parseTopics(envVars.get("ACTION_TOPICS"), "action"),
+                        envVars.getOrDefault("ACTION_GROUP_ID", "flink_action_consumer"));
 
         TrendingJob.TrendingJobOptions jobOptions = TrendingJob.TrendingJobOptions.builder()
                 .withCreationSourceOptions(creationOptions)
@@ -36,7 +36,7 @@ public class JobMain {
                 .withWindowSize(parseDuration(envVars.get("WINDOW_SIZE"), Duration.ofMinutes(5)))
                 .withCalculatorHalfLife(parseDuration(envVars.get("CALCULATOR_HALF_LIFE"), Duration.ofMinutes(10)))
                 .withWindowDecayHalfLife(parseDuration(envVars.get("WINDOW_DECAY_HALF_LIFE"), Duration.ofMinutes(10)))
-                .withRedisUri(envVars.getOrDefault("TRENDING_REDIS_URI", "redis://localhost:6379"))
+                .withRedisUri(envVars.getOrDefault("TRENDING_REDIS_URI", "redis://8.130.134.60:6666"))
                 .build();
 
         TrendingJob.build(env, jobOptions);

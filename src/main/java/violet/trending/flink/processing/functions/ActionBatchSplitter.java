@@ -6,7 +6,7 @@ import org.apache.flink.util.Collector;
 import violet.trending.flink.common.pojo.Action;
 import violet.trending.flink.common.pojo.ActionBatch;
 
-import java.util.function.Function;
+
 
 @Slf4j
 public class ActionBatchSplitter implements FlatMapFunction<ActionBatch, Action> {
@@ -18,30 +18,23 @@ public class ActionBatchSplitter implements FlatMapFunction<ActionBatch, Action>
             return;
         }
 
-        Function<String, String[]> safeSplit = str ->
-                (str == null || str.trim().isEmpty()) ? new String[0] : str.split(",");
-
-        String[] actionTypes = safeSplit.apply(batch.getActionTypeList());
-        String[] creationIds = safeSplit.apply(batch.getCreationIdList());
-        String[] timestamps = safeSplit.apply(batch.getTimestampList());
-
-        if (actionTypes.length != creationIds.length || actionTypes.length != timestamps.length) {
-            log.error("Inconsistent list lengths for userId={}: actionTypes={}, creationIds={}, timestamps={}",
-                    batch.getUserId(), actionTypes.length, creationIds.length, timestamps.length);
+        if (batch.getCreationList() == null || batch.getCreationList().isBlank()) {
+            return;
         }
 
-        for (int i = 0; i < timestamps.length; i++) {
+        String[] creationIds = batch.getCreationList().split(",");
+
+        for (String creationIdStr : creationIds) {
             try {
                 Action action = new Action();
-                action.setActionType(Integer.parseInt(actionTypes[i].trim()));
-                action.setCreationId(Long.parseLong(creationIds[i].trim()));
-                action.setActionTs(Long.parseLong(timestamps[i].trim()));
+                action.setActionType(batch.getActionType());
+                action.setCreationId(Long.parseLong(creationIdStr.trim()));
+                action.setActionTs(batch.getTimestamp());
                 action.setUserId(batch.getUserId());
 
                 out.collect(action);
             } catch (NumberFormatException e) {
-                log.error("Failed to parse action at index {} for userId={}: actionType={}, creationId={}, timestamp={}",
-                        i, batch.getUserId(), actionTypes[i], creationIds[i], timestamps[i], e);
+                log.error("Failed to parse creationId '{}' for userId={}", creationIdStr, batch.getUserId(), e);
             }
         }
     }

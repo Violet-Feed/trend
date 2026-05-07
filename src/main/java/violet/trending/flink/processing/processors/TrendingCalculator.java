@@ -76,8 +76,10 @@ public class TrendingCalculator extends KeyedProcessFunction<Long, Action, Trend
         double actionWeight = switch (action.getActionType()) {
             case 2 -> 1.0;  // 点击
             case 3 -> 2.0;  // 点赞
-            case 4 -> 3.0;  // 评论
-            case 5 -> 3.0;  // 转发
+            case 4 -> 1.0;  // 点赞评论
+            case 5 -> 3.0;  // 评论
+            case 6 -> 1.0;  // 回复
+            case 7 -> 3.0;  // 转发
             default -> 0.0; // other signals
         };
 
@@ -102,5 +104,6 @@ public class TrendingCalculator extends KeyedProcessFunction<Long, Action, Trend
         private String category;
         private double score;
         private Long lastActionTs;
+        private boolean removed;
     }
 }
