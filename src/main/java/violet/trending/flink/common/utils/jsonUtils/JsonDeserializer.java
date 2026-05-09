@@ -12,6 +12,7 @@ public class JsonDeserializer<T> extends AbstractDeserializationSchema<T> {
     private final Class<T> targetClass;
 
     public JsonDeserializer(Class<T> targetClass) {
+        super(TypeInformation.of(targetClass));
         this.targetClass = targetClass;
     }
 
