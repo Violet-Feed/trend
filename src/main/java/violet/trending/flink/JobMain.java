@@ -16,7 +16,7 @@ public class JobMain {
         env.enableCheckpointing(100_000L);
 
         Map<String, String> envVars = System.getenv();
-        String bootstrapServers = envVars.getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "8.130.134.60:9094");
+        String bootstrapServers = envVars.getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "10.66.0.1:9094");
 
         KafkaSourceFactory.KafkaSourceOptions creationOptions =
                 new KafkaSourceFactory.KafkaSourceOptions(
@@ -36,7 +36,7 @@ public class JobMain {
                 .withWindowSize(parseDuration(envVars.get("WINDOW_SIZE"), Duration.ofMinutes(5)))
                 .withCalculatorHalfLife(parseDuration(envVars.get("CALCULATOR_HALF_LIFE"), Duration.ofMinutes(10)))
                 .withWindowDecayHalfLife(parseDuration(envVars.get("WINDOW_DECAY_HALF_LIFE"), Duration.ofMinutes(10)))
-                .withRedisUri(envVars.getOrDefault("TRENDING_REDIS_URI", "redis://8.130.134.60:6666"))
+                .withRedisUri(envVars.getOrDefault("TRENDING_REDIS_URI", "redis://10.66.0.1:6666"))
                 .build();
 
         TrendingJob.build(env, jobOptions);
