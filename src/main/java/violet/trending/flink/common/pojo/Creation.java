@@ -8,6 +8,22 @@ import lombok.Data;
 public class Creation {
     private Payload payload;
 
+    public Long getCreationId() {
+        return payload == null ? null : payload.getCreationId();
+    }
+
+    public Long getUserId() {
+        return payload == null ? null : payload.getUserId();
+    }
+
+    public String getCategory() {
+        return payload == null ? null : payload.getCategory();
+    }
+
+    public Integer getStatus() {
+        return payload == null ? null : payload.getStatus();
+    }
+
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Payload {
