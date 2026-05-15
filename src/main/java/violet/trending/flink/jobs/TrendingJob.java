@@ -1,7 +1,6 @@
 package violet.trending.flink.jobs;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
@@ -15,7 +14,6 @@ import violet.trending.flink.connectors.redis.RedisHotRankingSink;
 import violet.trending.flink.processing.aggregators.CategoryTopKAggregator;
 import violet.trending.flink.processing.functions.ActionBatchSplitter;
 import violet.trending.flink.processing.processors.CategoryRankingManager;
-import violet.trending.flink.processing.processors.CreationStateUpdater;
 import violet.trending.flink.processing.processors.TrendingCalculator;
 
 import java.time.Duration;
@@ -52,42 +50,29 @@ public final class TrendingJob {
                 actionWatermarks,
                 "action-batch-source");
 
-        // --- Creation state enrichment & removal signal ---
-        SingleOutputStreamOperator<Creation> creationUpdateStream = creationStream
+        // --- Creation stream ---
+        DataStream<Creation> validCreationStream = creationStream
                 .name("creation-stream")
-                .keyBy(Creation::getCreationId)
-                .process(new CreationStateUpdater())
-                .name("creation-state-updater");
+                .filter(c -> c != null && c.getCreationId() != null)
+                .name("filter-invalid-creation");
 
-        // Removal signal: creations with status != 0 -> TrendingResult with removed=true
-        DataStream<TrendingCalculator.TrendingResult> removalStream = creationUpdateStream
-                .filter(c -> c.getStatus() != null && c.getStatus() != 0)
-                .map(c -> {
-                    TrendingCalculator.TrendingResult r = new TrendingCalculator.TrendingResult();
-                    r.setCreationId(c.getCreationId());
-                    r.setCategory(c.getCategory());
-                    r.setScore(0);
-                    r.setRemoved(true);
-                    return r;
-                })
-                .returns(TypeInformation.of(TrendingCalculator.TrendingResult.class))
-                .name("creation-removal-signal");
-
-        // --- Action processing & trending score update ---
+        // --- Action processing ---
         DataStream<Action> actionStream = actionBatchStream
                 .name("action-batch-stream")
                 .flatMap(new ActionBatchSplitter())
+                .filter(a -> a != null && a.getCreationId() != null)
                 .name("action-batch-splitter");
 
-        SingleOutputStreamOperator<TrendingCalculator.TrendingResult> trendingStream = actionStream
-                .keyBy(Action::getCreationId)
+        // --- Action + Creation joined by creationId ---
+        SingleOutputStreamOperator<TrendingCalculator.TrendingResult> trendingStream = validCreationStream
+                .connect(actionStream)
+                .keyBy(Creation::getCreationId, Action::getCreationId)
                 .process(new TrendingCalculator(options.calculatorHalfLifeMillis))
                 .name("trending-calculator");
 
         // --- Per-category ranking -> trend:{category} ---
         DataStream<TrendingCalculator.TrendingResult> categoryInput = trendingStream
-                .filter(r -> r.getCategory() != null)
-                .union(removalStream.filter(r -> r.getCategory() != null));
+                .filter(r -> r.getCategory() != null);
 
         DataStream<CategoryTopKAggregator.CategoryTopKResult> categoryRanking = categoryInput
                 .keyBy(TrendingCalculator.TrendingResult::getCategory)
@@ -99,8 +84,7 @@ public final class TrendingJob {
                 .name("redis-category-sink");
 
         // --- Global ranking -> trend:all ---
-        DataStream<TrendingCalculator.TrendingResult> allInput = trendingStream
-                .union(removalStream);
+        DataStream<TrendingCalculator.TrendingResult> allInput = trendingStream;
 
         DataStream<CategoryTopKAggregator.CategoryTopKResult> globalRanking = allInput
                 .keyBy(r -> "all")

@@ -5,17 +5,14 @@ import lombok.Setter;
 import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
-import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.functions.co.KeyedCoProcessFunction;
 import org.apache.flink.util.Collector;
 import violet.trending.flink.common.pojo.Action;
 import violet.trending.flink.common.pojo.Creation;
 
 import java.time.Duration;
 
-/**
- * 示例：Action 流 keyedBy creationId 后，读取 Creation 状态并更新热度值。
- */
-public class TrendingCalculator extends KeyedProcessFunction<Long, Action, TrendingCalculator.TrendingResult> {
+public class TrendingCalculator extends KeyedCoProcessFunction<Long, Creation, Action, TrendingCalculator.TrendingResult> {
 
     private transient ValueState<Creation> creationState;
     private transient ValueState<Double> trendingScoreState;
@@ -50,10 +47,37 @@ public class TrendingCalculator extends KeyedProcessFunction<Long, Action, Trend
     }
 
     @Override
-    public void processElement(Action action, Context ctx, Collector<TrendingResult> out) throws Exception {
+    public void processElement1(Creation creation, Context ctx, Collector<TrendingResult> out) throws Exception {
+        if (creation == null || creation.getCreationId() == null) {
+            return;
+        }
+
+        if (creation.getStatus() != null && creation.getStatus() != 0) {
+            TrendingResult result = new TrendingResult();
+            result.setCreationId(creation.getCreationId());
+            result.setCategory(creation.getCategory());
+            result.setScore(0d);
+            result.setRemoved(true);
+
+            out.collect(result);
+
+            creationState.clear();
+            trendingScoreState.clear();
+            lastScoreUpdateTsState.clear();
+            return;
+        }
+
+        creationState.update(creation);
+    }
+
+    @Override
+    public void processElement2(Action action, Context ctx, Collector<TrendingResult> out) throws Exception {
+        if (action == null || action.getCreationId() == null) {
+            return;
+        }
+
         Creation creation = creationState.value();
         if (creation == null) {
-            // Creation 还没入 state，可以选择跳过或打回重试
             return;
         }
 
@@ -69,18 +93,20 @@ public class TrendingCalculator extends KeyedProcessFunction<Long, Action, Trend
         result.setCategory(creation.getCategory());
         result.setScore(updatedScore);
         result.setLastActionTs(action.getActionTs());
+        result.setRemoved(false);
+
         out.collect(result);
     }
 
     private double calculateScore(Action action, double previousScore, Long lastUpdatedTs) {
         double actionWeight = switch (action.getActionType()) {
-            case 2 -> 1.0;  // 点击
-            case 3 -> 2.0;  // 点赞
-            case 4 -> 1.0;  // 点赞评论
-            case 5 -> 3.0;  // 评论
-            case 6 -> 1.0;  // 回复
-            case 7 -> 3.0;  // 转发
-            default -> 0.0; // other signals
+            case 2 -> 1.0;
+            case 3 -> 2.0;
+            case 4 -> 1.0;
+            case 5 -> 3.0;
+            case 6 -> 1.0;
+            case 7 -> 3.0;
+            default -> 0.0;
         };
 
         if (previousScore < 0) {
